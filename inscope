@@ -160,6 +160,7 @@ if __name__ == "__main__":
         parser.error(e)
     if sys.stdin.isatty():
         parser.print_help()
+        sys.exit(1)
 
     r_domain = re.compile(
             r'^(?:[a-z0-9-]{1,10}://)?'
