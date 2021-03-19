@@ -1,0 +1,174 @@
+#!/usr/bin/python3
+"""inscope
+Filter in-scope subdomains & URLs from input
+
+by @nil0x42
+https://github.com/nil0x42/inscope
+"""
+import sys, re, argparse, pathlib, textwrap
+
+
+class Scope:
+    error = None
+    default_scope_file = "./SCOPE"
+    in_scope = None
+    out_scope = None
+    r_scope = re.compile('[a-z0-9.*-]{4,253}')
+
+    def __init__(self, scope_file_or_str):
+        s = scope_file_or_str
+        if s is None:
+            s = self.get_nearest_scope_file()
+        s_file = pathlib.Path(s)
+        if s_file.is_file():
+            try:
+                data = s_file.read_text()
+            except PermissionError as e:
+                raise Exception("%s: %s" % s_file, e.strerror)
+            self.get_scope_from_file(str(s_file), data)
+        else:
+            try:
+                self.get_scope_from_string(s)
+            except AssertionError:
+                raise Exception("scope %r is not a valid file or expression" \
+                        % s)
+
+    def get_nearest_scope_file(self):
+        """search for ./SCOPE, ../SCOPE, ../../SCOPE, etc"""
+        prev = None
+        path = pathlib.Path(".").absolute()
+        while True:
+            if path == prev:
+                break # we reached root: no more path to check
+            if prev:
+                path = path.parent
+            scope_file = path.joinpath(self.default_scope_file)
+            if scope_file.is_file():
+                return str(scope_file)
+            prev = path
+        raise Exception("%r file not found in any of the parent directories" \
+                % self.default_scope_file)
+
+    def get_scope_from_file(self, path, content):
+        """get scope from file
+        example:
+        $ cat ./SCOPE
+        # ----------
+        # in-scope
+        *.target.com
+        *.staging.target.io
+        # out-of-scope (must start with '!')
+        ! private.target.com
+        # ----------
+        """
+        in_scope = []
+        out_scope = []
+        for lineno, line in enumerate(content.splitlines(), 1):
+            is_in_scope = True
+            line = line.strip().lower()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("- ") or line.startswith("/") \
+                    or line.startswith("!"):
+                line = line[1:].lstrip()
+                is_in_scope = False
+            try:
+                entry = self.scope_entry_to_regex(line)
+            except Exception as e:
+                raise Exception("%s on %s on line %d" % (e, path, lineno))
+            if is_in_scope:
+                in_scope.append(entry)
+            else:
+                out_scope.append(entry)
+        self.in_scope = re.compile("|".join(in_scope))
+        self.out_scope = re.compile("|".join(out_scope))
+    
+    def get_scope_from_string(self, string):
+        """get scope from expression string
+        example:
+        "*.target.com|beta.target.io"
+        """
+        string = string.lower()
+        assert "." in string or "*" in string
+        assert re.fullmatch(r'[a-z0-9.|*-]{3,}', string)
+        in_scope = []
+        for entry in string.split("|"):
+            in_scope.append(self.scope_entry_to_regex(entry))
+        self.in_scope = re.compile("|".join(in_scope))
+        self.out_scope = re.compile("")
+
+    def scope_entry_to_regex(self, entry):
+        if not self.r_scope.fullmatch(entry) or "." not in entry:
+            raise Exception("bad scope entry: %r" % entry)
+        if entry.startswith("*."):
+            # so '*.target.com' also captures 'target.com' as in-scope
+            entry = "^" + entry[2:]
+        entry = entry.replace(".", "\.")
+        entry = entry.replace("*", ".{1,253}")
+        entry = entry.replace("^", "(?:.{1,253}\.)?")
+        return entry
+
+    def match(self, domain):
+        if self.out_scope.fullmatch(domain):
+            return False
+        if self.in_scope.fullmatch(domain):
+            return True
+        return False
+
+
+def build_parser():
+    argparse._sys.stdout = argparse._sys.stderr
+    p = argparse.ArgumentParser()
+    p.formatter_class=argparse.RawDescriptionHelpFormatter
+    p.description = "Filter in-scope subdomains & URLs from input"
+    p.epilog = textwrap.dedent("""
+            usage examples:
+              cat urls.txt | inscope > inscope-urls.txt
+              cat domains.txt | inscope -r > domains-NOT-in-scope.txt
+              cat urls.txt | inscope -s '*.gov|*.mil' > us-gov-urls.txt
+            
+            configuration:
+              if not specified with '-s', scope is taken from ./SCOPE file
+              in nearest parent directory.
+            
+            scope file syntax example:
+              ----------
+              # this is a comment
+              # in-scope items:
+              *.target.com
+              www.target.io
+              # out-of-scope items start with '!'
+              ! excluded.target.com
+              ----------
+            """)
+    p.add_argument('-s', '--scope',
+            help="scope file or expression (defaults to `./SCOPE` file)",
+            metavar="<file or expr>")
+    p.add_argument('-r', '--reverse',
+            help="reverse match: only show out-of-scope items",
+            action="store_true")
+    return p
+
+
+if __name__ == "__main__":                                                                                                                                                   
+    parser = build_parser()
+    opt = vars(parser.parse_args())
+
+    try:
+        scope = Scope(opt["scope"])
+    except Exception as e:
+        parser.error(e)
+    if sys.stdin.isatty():
+        parser.print_help()
+
+    r_domain = re.compile(
+            r'^(?:[a-z0-9-]{1,10}://)?'
+            r'([a-z0-9.-]{4,253})'
+            r'(?:[^a-z0-9.-]|$)'
+            )
+    for line in sys.stdin:
+        match = r_domain.match(line.lower())
+        if match:
+            domain = match[1]
+            if scope.match(domain) ^ opt["reverse"]:
+                sys.stdout.write(line)
