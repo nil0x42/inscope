@@ -117,7 +117,6 @@ class Scope:
 
 
 def build_parser():
-    argparse._sys.stdout = argparse._sys.stderr
     p = argparse.ArgumentParser()
     p.formatter_class=argparse.RawDescriptionHelpFormatter
     p.description = "Filter in-scope subdomains & URLs from input"
@@ -151,6 +150,8 @@ def build_parser():
 
 
 if __name__ == "__main__":                                                                                                                                                   
+    real_stdout = sys.stdout
+    sys.stdout = sys.stderr
     parser = build_parser()
     opt = vars(parser.parse_args())
 
@@ -162,6 +163,7 @@ if __name__ == "__main__":
         parser.print_help()
         sys.exit(1)
 
+    sys.stdout = real_stdout
     r_domain = re.compile(
             r'^(?:[a-z0-9-]{1,10}://)?'
             r'([a-z0-9.-]{4,253})'
